@@ -4,6 +4,11 @@ import {
   StateField,
   Transaction,
   Value,
+  Prec,
+  EditorState,
+  EditorSelection,
+  TransactionSpec,
+  SelectionRange,
 } from '@codemirror/state'
 import {
   ViewPlugin,
@@ -12,29 +17,49 @@ import {
   EditorView,
   DecorationSet,
   WidgetType,
+  keymap,
 } from '@codemirror/view'
 import { OpenAI } from 'openai'
 
 const openai = new OpenAI({
-  baseURL: 'https://api.openai.com/v1/chat/completions',
   //   process.env['OPENAI_API_KEY'], // This is the default and can be omitted
-  apiKey: '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',
-});
+  apiKey: '<insert your API key here>',
+  dangerouslyAllowBrowser: true,
+})
 
-const InlineSuggestionEffect = StateEffect.define<{
-  text: string | null
-  doc: Text
-}>()
+export function debouncePromise<T extends (...args: any[]) => any>(
+  fn: T,
+  wait: number,
+  abortValue: any = undefined
+) {
+  let cancel = () => {
+    // do nothing
+  }
+  // type Awaited<T> = T extends PromiseLike<infer U> ? U : T
+  type ReturnT = Awaited<ReturnType<T>>
+  const wrapFunc = (...args: Parameters<T>): Promise<ReturnT> => {
+    cancel()
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve(fn(...args)), wait)
+      cancel = () => {
+        clearTimeout(timer)
+        if (abortValue !== undefined) {
+          reject(abortValue)
+        }
+      }
+    })
+  }
+  return wrapFunc
+}
 
-async function callSuggestionAPI(state: Value) {
+const callSuggestionAPI = debouncePromise(async function (text: string) {
   try {
-    const text = state.doc.toString()
     const completion = await openai.chat.completions.create({
       messages: [
         {
           role: 'system',
           content:
-            'You are a helpful assistant that provides autocomplete suggestions to latex code',
+            'You are a helpful assistant that provides autocomplete suggestions to text being edited based on what is provide by the user. Only generate your suggestion inside ```latex\n{suggestion}\n```',
         },
         {
           role: 'user',
@@ -42,18 +67,27 @@ async function callSuggestionAPI(state: Value) {
         },
       ],
       store: true,
-      max_tokens: 100,
+      max_tokens: 500,
       temperature: 0.7,
-      model: 'gpt-3.5-turbo',
+      model: 'gpt-4o-mini',
     })
 
-    const suggestion = completion.choices[0].text
+    let suggestion = completion.choices[0].message.content
+
+    // extract the latex suggestion
+    suggestion = suggestion.match(/```latex\n([^]*)\n```/)?.[1]
+
     return suggestion
   } catch (error) {
     console.error('Error:', error)
     return null
   }
-}
+}, 200);
+
+const InlineSuggestionEffect = StateEffect.define<{
+  text: string | null
+  doc: Text
+}>()
 
 // Current state of the autosuggestion
 const InlineSuggestionState = StateField.define<{ suggestion: null | string }>({
@@ -128,12 +162,20 @@ const renderInlineSuggestionPlugin = ViewPlugin.fromClass(
 const fetchGPTSuggestion = ViewPlugin.fromClass(
   class {
     async update(update: ViewUpdate) {
+
       const doc = update.state.doc
+
+
       // Only fetch if the document has changed
       if (!update.docChanged) {
         return
       }
-      const result = await callSuggestionAPI(update.state)
+
+      // get last 100 from the document up till the cursor
+      let text = update.state.doc.sliceString(0, update.state.selection.main.head).slice(-100)
+
+      const result = await callSuggestionAPI(text)
+      
       update.view.dispatch({
         effects: InlineSuggestionEffect.of({ text: result, doc: doc }),
       })
@@ -141,10 +183,67 @@ const fetchGPTSuggestion = ViewPlugin.fromClass(
   }
 )
 
-export function gptInlineSuggestions(): Extension {
+function insertCompletionText(
+  state: EditorState,
+  text: string,
+  from: number,
+  to: number
+): TransactionSpec {
+  return {
+    ...state.changeByRange((range: SelectionRange) => {
+      if (range == state.selection.main)
+        return {
+          changes: { from: from, to: to, insert: text },
+          range: EditorSelection.cursor(from + text.length),
+        }
+      const len = to - from
+      if (
+        !range.empty ||
+        (len &&
+          state.sliceDoc(range.from - len, range.from) !=
+            state.sliceDoc(from, to))
+      )
+        return { range }
+      return {
+        changes: { from: range.from - len, to: range.from, insert: text },
+        range: EditorSelection.cursor(range.from - len + text.length),
+      }
+    }),
+    userEvent: 'input.complete',
+  }
+}
+
+const inlineSuggestionKeymap = Prec.highest(
+  keymap.of([
+    {
+      key: 'Tab',
+      run: (view: EditorView) => {
+        const suggestion = view.state.field(InlineSuggestionState)?.suggestion
+
+        // If there is no suggestion, do nothing and let the default keymap handle it
+        if (!suggestion) {
+          return false
+        }
+
+        view.dispatch({
+          ...insertCompletionText(
+            view.state,
+            suggestion,
+            view.state.selection.main.head,
+            view.state.selection.main.head
+          ),
+        })
+        return true
+      },
+    },
+  ])
+)
+
+export function inlineGPTSuggestions(): Extension {
   return [
     fetchGPTSuggestion,
     InlineSuggestionState,
     renderInlineSuggestionPlugin,
+    inlineSuggestionKeymap,
   ]
 }
