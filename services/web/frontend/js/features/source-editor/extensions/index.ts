@@ -53,6 +53,7 @@ import { isSplitTestEnabled } from '@/utils/splitTestUtils'
 import { ranges } from './ranges'
 import { trackDetachedComments } from './track-detached-comments'
 import { reviewTooltip } from './review-tooltip'
+import { inlineGPTSuggestions } from './inline-gpt-suggestions'
 
 const moduleExtensions: Array<(options: Record<string, any>) => Extension> =
   importOverleafModules('sourceEditorExtensions').map(
@@ -60,6 +61,7 @@ const moduleExtensions: Array<(options: Record<string, any>) => Extension> =
   )
 
 export const createExtensions = (options: Record<string, any>): Extension[] => [
+  inlineGPTSuggestions(),
   lineNumbers(),
   highlightSpecialChars(options.visual.visual),
   // The built-in extension that manages the history stack,
