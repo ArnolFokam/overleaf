@@ -22,8 +22,7 @@ import {
 import { OpenAI } from 'openai'
 
 const openai = new OpenAI({
-  //   process.env['OPENAI_API_KEY'], // This is the default and can be omitted
-  apiKey: '<insert your API key here>',
+  apiKey: '<API_KEY>',
   dangerouslyAllowBrowser: true,
 })
 
